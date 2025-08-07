@@ -13,6 +13,10 @@ class Config:
     currency: str
     price_minor_units: int
     subscription_duration: timedelta
+    # Google Sheets
+    gsheet_spreadsheet_id: str
+    gsheet_credentials_path: str | None
+    gsheet_credentials_json: str | None
 
 
 def load_config() -> Config:
@@ -29,6 +33,11 @@ def load_config() -> Config:
     # Default: 30 days
     subscription_duration_days = int(os.environ.get("SUB_DURATION_DAYS", "30"))
 
+    # Google Sheets
+    gsheet_spreadsheet_id = os.environ.get("GSHEET_SPREADSHEET_ID", "")
+    gsheet_credentials_path = os.environ.get("GSHEET_CREDENTIALS_PATH")
+    gsheet_credentials_json = os.environ.get("GSHEET_CREDENTIALS_JSON")
+
     return Config(
         telegram_bot_token=token,
         payment_provider_token=provider_token,
@@ -38,4 +47,7 @@ def load_config() -> Config:
         currency=currency,
         price_minor_units=price_minor_units,
         subscription_duration=timedelta(days=subscription_duration_days),
+        gsheet_spreadsheet_id=gsheet_spreadsheet_id,
+        gsheet_credentials_path=gsheet_credentials_path,
+        gsheet_credentials_json=gsheet_credentials_json,
     )

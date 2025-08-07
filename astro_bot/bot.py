@@ -30,6 +30,7 @@ from database import Database
 from astrology import AstrologyEngine, load_quotes
 from referral import ensure_user_code, process_start_payload, build_ref_link, referral_stats
 from payments import create_invoice, handle_successful_payment
+from gsheets import GoogleSheetClient, SheetConfig
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -153,6 +154,35 @@ async def confirm_first(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     text = engine.render_daily_message(user.name or "друг", aspects, quotes)
     await context.bot.send_message(chat_id=user_id, text=text)
     await db.track_message(user_id, text)
+
+    # Google Sheet: добавим/обновим строку при завершении регистрации
+    sheet: GoogleSheetClient | None = context.bot_data.get("gsheet")
+    if sheet:
+        me = await context.bot.get_me()
+        from referral import ensure_user_code, build_ref_link
+        code = await ensure_user_code(db, user_id)
+        ref_link = build_ref_link(me.username, code)
+        count, _ = await db.get_referral_stats(user_id)
+        paid_count = await db.count_paid_referrals(user_id)
+        await asyncio.get_running_loop().run_in_executor(
+            None,
+            lambda: sheet.upsert_user(
+                user_id=user_id,
+                name=user.name or "",
+                birth_date=user.birth_date or "",
+                birth_time=user.birth_time or "",
+                birth_place=user.birth_place or "",
+                created_at_iso=user.created_at,
+                is_paid=bool(user.is_subscribed),
+                amount=None,
+                paid_at=user.subscription_until,
+                ref_link=ref_link,
+                referrals_count=count,
+                paid_referrals_count=paid_count,
+                given_days=0,
+                ever_paid=bool(user.ever_paid),
+            ),
+        )
 
     # schedule daily
     await schedule_user_job(context, user_id, user.daily_time or "10:00")
@@ -282,6 +312,36 @@ async def successful_payment_callback(update: Update, context: ContextTypes.DEFA
     db: Database = context.bot_data["db"]
     user_id = update.message.from_user.id
     await handle_successful_payment(config, db, user_id, context)
+    await db.mark_ever_paid(user_id)
+
+    # Обновим строку в Google Sheet
+    sheet: GoogleSheetClient | None = context.bot_data.get("gsheet")
+    if sheet:
+        user = await db.get_user(user_id)
+        me = await context.bot.get_me()
+        code = await ensure_user_code(db, user_id)
+        ref_link = build_ref_link(me.username, code)
+        count, _ = await db.get_referral_stats(user_id)
+        paid_count = await db.count_paid_referrals(user_id)
+        await asyncio.get_running_loop().run_in_executor(
+            None,
+            lambda: sheet.upsert_user(
+                user_id=user_id,
+                name=user.name or "",
+                birth_date=user.birth_date or "",
+                birth_time=user.birth_time or "",
+                birth_place=user.birth_place or "",
+                created_at_iso=user.created_at,
+                is_paid=bool(user.is_subscribed),
+                amount=(config.price_minor_units / 100.0),
+                paid_at=user.subscription_until,
+                ref_link=ref_link,
+                referrals_count=count,
+                paid_referrals_count=paid_count,
+                given_days=int(config.subscription_duration.days),
+                ever_paid=True,
+            ),
+        )
 
 
 async def precheckout_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -303,6 +363,21 @@ async def post_init(app: Application) -> None:
 
     quotes = load_quotes(os.path.join(os.path.dirname(__file__), "quotes"))
     app.bot_data["quotes"] = quotes
+
+    # Google Sheets client
+    if config.gsheet_spreadsheet_id:
+        sheet_cfg = SheetConfig(
+            spreadsheet_id=config.gsheet_spreadsheet_id,
+            credentials_path=config.gsheet_credentials_path,
+            credentials_json=config.gsheet_credentials_json,
+        )
+        try:
+            gsheet = GoogleSheetClient(sheet_cfg)
+            gsheet.init()
+            app.bot_data["gsheet"] = gsheet
+            logger.info("Google Sheets connected")
+        except Exception as e:
+            logger.warning("Google Sheets init failed: %s", e)
 
     # Schedule existing users
     users = await db.list_users()

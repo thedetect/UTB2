@@ -20,6 +20,7 @@ class User:
     points: int
     is_subscribed: int  # 0/1
     subscription_until: Optional[str]
+    ever_paid: Optional[int] = 0
 
 
 class Database:
@@ -48,6 +49,12 @@ class Database:
                 );
                 """
             )
+            # Миграция: добавляем столбец ever_paid при его отсутствии
+            try:
+                await db.execute("ALTER TABLE users ADD COLUMN ever_paid INTEGER DEFAULT 0")
+            except Exception:
+                pass
+
             await db.execute(
                 """
                 CREATE TABLE IF NOT EXISTS referrals (
@@ -152,6 +159,20 @@ class Database:
                 points = int(row[1]) if row else 0
                 return referred_count, points
 
+    async def count_paid_referrals(self, referrer_id: int) -> int:
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                """
+                SELECT COUNT(*)
+                FROM referrals r
+                JOIN users u ON u.user_id = r.referred_user_id
+                WHERE r.referrer_id = ? AND (COALESCE(u.ever_paid,0)=1 OR COALESCE(u.is_subscribed,0)=1)
+                """,
+                (referrer_id,),
+            ) as cur:
+                row = await cur.fetchone()
+                return int(row[0]) if row else 0
+
     async def set_referrer(self, user_id: int, referrer_id: int) -> None:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("UPDATE users SET referrer_id=? WHERE user_id=?", (referrer_id, user_id))
@@ -178,6 +199,11 @@ class Database:
                 "UPDATE users SET is_subscribed=1, subscription_until=? WHERE user_id=?",
                 (until.isoformat(), user_id),
             )
+            await db.commit()
+
+    async def mark_ever_paid(self, user_id: int) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("UPDATE users SET ever_paid=1 WHERE user_id=?", (user_id,))
             await db.commit()
 
     async def clear_subscription(self, user_id: int) -> None:
